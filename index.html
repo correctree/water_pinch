@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Hand Tracking Water Surface - Pinch Drop v2</title>
+  <title>Hand Tracking Water Surface - Falling Pinch Drop v8</title>
 
   <!-- MediaPipe Hands -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
@@ -26,19 +26,15 @@
       height: 100vh;
       display: block;
       cursor: crosshair;
-      z-index: 1;
     }
 
     video {
       position: fixed;
-      inset: 0;
-      width: 100vw;
-      height: 100vh;
-      object-fit: cover;
-      transform: scaleX(-1);
-      filter: blur(18px) brightness(0.48) saturate(1.25);
-      opacity: 0.72;
-      z-index: 0;
+      left: 0;
+      top: 0;
+      width: 1px;
+      height: 1px;
+      opacity: 0;
       pointer-events: none;
     }
 
@@ -75,10 +71,45 @@
       background: rgba(255,255,255,.22);
     }
 
+    #toggleControlsBtn {
+      margin-top: 8px;
+      margin-bottom: 2px;
+      padding: 5px 9px;
+      font-size: 12px;
+    }
+
+    #controlsPanel {
+      margin-top: 4px;
+    }
+
+    #controlsPanel.hidden {
+      display: none;
+    }
+
+    .control {
+      margin-top: 8px;
+      display: grid;
+      grid-template-columns: 64px 120px 36px;
+      gap: 6px;
+      align-items: center;
+      font-size: 12px;
+    }
+
+    input[type="range"] {
+      width: 120px;
+      accent-color: white;
+    }
+
+    .value {
+      text-align: right;
+      opacity: 0.85;
+      font-variant-numeric: tabular-nums;
+    }
+
     #status {
       opacity: 0.85;
       font-size: 12px;
-      margin-top: 4px;
+      margin-top: 8px;
     }
   </style>
 </head>
@@ -89,10 +120,41 @@
   <div id="ui">
     <button id="startBtn">Start Camera / Audio</button><br>
     クリック：水滴<br>
-    ピンチ：強い水滴<br>
+    ピンチ：水滴が落下してから強い波紋<br>
+    MediaPipe Hands：21点ランドマーク<br>
     波の干渉：色と音が変化<br>
     カメラ映像：ぼかした背景
+
+    <button id="toggleControlsBtn">スライダー非表示</button>
+
+    <div id="controlsPanel">
+      <div class="control">
+        <label for="blurSlider">ぼかし</label>
+        <input id="blurSlider" type="range" min="0" max="40" value="18" step="1">
+        <span id="blurValue" class="value">18</span>
+      </div>
+
+      <div class="control">
+        <label for="brightnessSlider">明るさ</label>
+        <input id="brightnessSlider" type="range" min="20" max="120" value="52" step="1">
+        <span id="brightnessValue" class="value">52</span>
+      </div>
+
+      <div class="control">
+        <label for="saturateSlider">彩度</label>
+        <input id="saturateSlider" type="range" min="0" max="250" value="125" step="1">
+        <span id="saturateValue" class="value">125</span>
+      </div>
+
+      <div class="control">
+        <label for="veilSlider">水面</label>
+        <input id="veilSlider" type="range" min="0" max="85" value="48" step="1">
+        <span id="veilValue" class="value">48</span>
+      </div>
+    </div>
+
     <div id="status">camera: waiting</div>
+    <div id="pinchStatus">pinch: waiting</div>
   </div>
 
   <script>
@@ -102,6 +164,45 @@
     const video = document.getElementById("video");
     const startBtn = document.getElementById("startBtn");
     const statusEl = document.getElementById("status");
+    const pinchStatusEl = document.getElementById("pinchStatus");
+    const toggleControlsBtn = document.getElementById("toggleControlsBtn");
+    const controlsPanel = document.getElementById("controlsPanel");
+
+    const blurSlider = document.getElementById("blurSlider");
+    const brightnessSlider = document.getElementById("brightnessSlider");
+    const saturateSlider = document.getElementById("saturateSlider");
+    const veilSlider = document.getElementById("veilSlider");
+
+    const blurValue = document.getElementById("blurValue");
+    const brightnessValue = document.getElementById("brightnessValue");
+    const saturateValue = document.getElementById("saturateValue");
+    const veilValue = document.getElementById("veilValue");
+
+    const cameraFx = {
+      blur: 18,
+      brightness: 52,
+      saturate: 125,
+      veil: 48
+    };
+
+    function bindSlider(slider, output, key) {
+      slider.addEventListener("input", () => {
+        cameraFx[key] = Number(slider.value);
+        output.textContent = slider.value;
+      });
+    }
+
+    bindSlider(blurSlider, blurValue, "blur");
+    bindSlider(brightnessSlider, brightnessValue, "brightness");
+    bindSlider(saturateSlider, saturateValue, "saturate");
+    bindSlider(veilSlider, veilValue, "veil");
+
+    toggleControlsBtn.addEventListener("click", () => {
+      controlsPanel.classList.toggle("hidden");
+      toggleControlsBtn.textContent = controlsPanel.classList.contains("hidden")
+        ? "スライダー表示"
+        : "スライダー非表示";
+    });
 
     let W = 0;
     let H = 0;
@@ -113,6 +214,10 @@
     const ripples = [];
     const fingerState = new Map();
     const interferenceSounds = [];
+    const fallingDrops = [];
+
+    // ピンチしてから水面に落ちるまでの時間。大きくするとタイムラグが長くなる
+    const PINCH_DROP_FALL_TIME = 620;
 
     let audioCtx = null;
     let started = false;
@@ -295,6 +400,91 @@
       });
     }
 
+    function addFallingDrop(x, y, power = 3.2) {
+      // ピンチ位置から少し上に水滴を発生させ、時間差で水面へ落とす
+      const startY = Math.max(0, y - 90);
+      const endY = y;
+
+      fallingDrops.push({
+        x,
+        startY,
+        endY,
+        y: startY,
+        t: performance.now(),
+        duration: PINCH_DROP_FALL_TIME,
+        power,
+        hit: false
+      });
+    }
+
+    function updateFallingDrops() {
+      const now = performance.now();
+
+      for (let i = fallingDrops.length - 1; i >= 0; i--) {
+        const d = fallingDrops[i];
+        const p = Math.min(1, (now - d.t) / d.duration);
+
+        // ease-in：最初はゆっくり、最後に少し速く落ちる
+        const eased = p * p;
+        d.y = d.startY + (d.endY - d.startY) * eased;
+
+        if (p >= 1 && !d.hit) {
+          d.hit = true;
+          addRipple(d.x, d.endY, d.power, "pinch");
+          fallingDrops.splice(i, 1);
+        }
+      }
+    }
+
+    function drawFallingDrops() {
+      const now = performance.now();
+
+      for (const d of fallingDrops) {
+        const p = Math.min(1, (now - d.t) / d.duration);
+        const alpha = 0.95 - p * 0.2;
+        const r = 5 + p * 3;
+
+        // 落下の軌跡
+        const trail = ctx.createLinearGradient(d.x, d.startY, d.x, d.y);
+        trail.addColorStop(0, "rgba(235,210,255,0)");
+        trail.addColorStop(0.72, `rgba(235,210,255,${0.12 + p * 0.12})`);
+        trail.addColorStop(1, `rgba(255,245,255,${0.28 + p * 0.22})`);
+
+        ctx.strokeStyle = trail;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(d.x, d.startY);
+        ctx.lineTo(d.x, d.y);
+        ctx.stroke();
+
+        // 水滴本体
+        const glow = ctx.createRadialGradient(d.x, d.y, 0, d.x, d.y, 28 + p * 18);
+        glow.addColorStop(0, `rgba(255,245,255,${0.52 * alpha})`);
+        glow.addColorStop(0.25, `rgba(220,175,255,${0.32 * alpha})`);
+        glow.addColorStop(1, "rgba(220,175,255,0)");
+
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(d.x, d.y, 28 + p * 18, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = `rgba(255,248,255,${0.85 * alpha})`;
+        ctx.beginPath();
+        ctx.ellipse(d.x, d.y, r * 0.82, r * 1.18, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 着水直前の予兆リング
+        if (p > 0.72) {
+          const q = (p - 0.72) / 0.28;
+          ctx.strokeStyle = `rgba(230,190,255,${0.42 * q})`;
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.arc(d.x, d.endY, 10 + q * 24, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+    }
+
     function addRipple(x, y, power = 1, source = "click") {
       const interference = fieldAt(x, y);
 
@@ -335,20 +525,70 @@
     // クリック、またはピンチだけで水滴が発生する。
 
     function drawWaterBase() {
-      const grd = ctx.createRadialGradient(
+      // カメラ映像をCanvasに直接描画する。
+      // CSSでvideoを背景表示するより安定しやすい。
+      if (video.readyState >= 2 && video.videoWidth > 0 && video.videoHeight > 0) {
+        ctx.save();
+
+        // 背景として左右反転して描画
+        ctx.translate(W, 0);
+        ctx.scale(-1, 1);
+
+        // 画面全体をcoverするようにトリミング
+        const vw = video.videoWidth;
+        const vh = video.videoHeight;
+        const videoRatio = vw / vh;
+        const screenRatio = W / H;
+
+        let sx = 0;
+        let sy = 0;
+        let sw = vw;
+        let sh = vh;
+
+        if (videoRatio > screenRatio) {
+          // 横長すぎる場合は左右を切る
+          sw = vh * screenRatio;
+          sx = (vw - sw) * 0.5;
+        } else {
+          // 縦長すぎる場合は上下を切る
+          sh = vw / screenRatio;
+          sy = (vh - sh) * 0.5;
+        }
+
+        ctx.filter = `blur(${cameraFx.blur}px) brightness(${cameraFx.brightness / 100}) saturate(${cameraFx.saturate / 100})`;
+        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, W, H);
+        ctx.filter = "none";
+        ctx.restore();
+
+        // カメラの上に暗い水面ベール
+        ctx.fillStyle = `rgba(0, 12, 28, ${cameraFx.veil / 100})`;
+        ctx.fillRect(0, 0, W, H);
+      } else {
+        // カメラ開始前の背景
+        const grd = ctx.createRadialGradient(
+          W * 0.5, H * 0.42, 20,
+          W * 0.5, H * 0.5, Math.max(W, H)
+        );
+
+        grd.addColorStop(0, "#07304d");
+        grd.addColorStop(0.42, "#041a2e");
+        grd.addColorStop(1, "#010712");
+
+        ctx.fillStyle = grd;
+        ctx.fillRect(0, 0, W, H);
+      }
+
+      // 水面の青いグラデーション
+      const grd2 = ctx.createRadialGradient(
         W * 0.5, H * 0.42, 20,
         W * 0.5, H * 0.5, Math.max(W, H)
       );
 
-      grd.addColorStop(0, "rgba(7, 48, 77, 0.70)");
-      grd.addColorStop(0.42, "rgba(4, 26, 46, 0.74)");
-      grd.addColorStop(1, "rgba(1, 7, 18, 0.82)");
+      grd2.addColorStop(0, "rgba(7, 48, 77, 0.42)");
+      grd2.addColorStop(0.42, "rgba(4, 26, 46, 0.45)");
+      grd2.addColorStop(1, "rgba(1, 7, 18, 0.58)");
 
-      ctx.fillStyle = grd;
-      ctx.fillRect(0, 0, W, H);
-
-      // カメラ背景の上に水面らしい青いベールを重ねる
-      ctx.fillStyle = "rgba(0, 18, 38, 0.22)";
+      ctx.fillStyle = grd2;
       ctx.fillRect(0, 0, W, H);
 
       // 水面の薄い光
@@ -563,9 +803,11 @@
 
     function animate() {
       drawWaterBase();
+      updateFallingDrops();
       drawInterferenceField();
       detectInterferenceSound();
       drawRipples();
+      drawFallingDrops();
       drawInterferenceSoundMarks();
       drawFingerTouches();
       cleanupRipples();
@@ -575,10 +817,99 @@
 
     animate();
 
+
+    function getDistance2D(a, b) {
+      return Math.hypot(a.x - b.x, a.y - b.y);
+    }
+
+    function getDistance3D(a, b) {
+      const dz = (a.z || 0) - (b.z || 0);
+      return Math.hypot(a.x - b.x, a.y - b.y, dz);
+    }
+
+    function getHandScale(landmarks) {
+      // MediaPipe Handsの21点ランドマークを使う。
+      // 角度による見かけの変化を減らすため、複数の距離を平均して手のサイズを推定する。
+      const wrist = landmarks[0];
+      const indexMcp = landmarks[5];
+      const middleMcp = landmarks[9];
+      const ringMcp = landmarks[13];
+      const pinkyMcp = landmarks[17];
+
+      const palmLength = getDistance3D(wrist, middleMcp);
+      const palmWidthA = getDistance3D(indexMcp, pinkyMcp);
+      const palmWidthB = getDistance3D(indexMcp, ringMcp) + getDistance3D(ringMcp, pinkyMcp);
+
+      return Math.max(0.001, palmLength * 0.85 + palmWidthA * 0.65 + palmWidthB * 0.25);
+    }
+
+    function getPinchInfo(landmarks) {
+      const thumbTip = landmarks[4];
+      const thumbIp = landmarks[3];
+      const thumbMcp = landmarks[2];
+
+      const indexTip = landmarks[8];
+      const indexDip = landmarks[7];
+      const indexPip = landmarks[6];
+      const indexMcp = landmarks[5];
+
+      const handScale = getHandScale(landmarks);
+
+      // 2Dだけだと手の向きで距離が変わりやすいため、MediaPipeのzも含めた3D距離を併用する。
+      const tip2D = getDistance2D(thumbTip, indexTip) / handScale;
+      const tip3D = getDistance3D(thumbTip, indexTip) / handScale;
+
+      // ピンチは必ずしも「先端同士」だけが最短にならない。
+      // 指の角度によって親指先端が人差し指DIP/PIP側に近づくことがあるため、複数点の最小距離を見る。
+      const candidates = [
+        getDistance3D(thumbTip, indexTip),
+        getDistance3D(thumbTip, indexDip),
+        getDistance3D(thumbTip, indexPip),
+        getDistance3D(thumbIp, indexTip),
+        getDistance3D(thumbIp, indexDip)
+      ].map(v => v / handScale);
+
+      const multiPointDistance = Math.min(...candidates);
+
+      // 指の腹同士が近づいているかを見る補助指標
+      const padDistance =
+        (
+          getDistance3D(thumbTip, indexTip) +
+          getDistance3D(thumbIp, indexDip) +
+          getDistance3D(thumbMcp, indexMcp) * 0.2
+        ) / handScale;
+
+      // 人差し指が完全に伸びているだけの状態をピンチと誤認しにくくする
+      const indexBend =
+        getDistance3D(indexTip, indexMcp) /
+        Math.max(0.001, getDistance3D(indexPip, indexMcp) + getDistance3D(indexDip, indexPip));
+
+      // 角度依存を下げるため、最終スコアは「先端距離」より「複数点の最小距離」を強めに使う。
+      const score =
+        multiPointDistance * 0.58 +
+        tip3D * 0.24 +
+        tip2D * 0.12 +
+        padDistance * 0.06;
+
+      return {
+        score,
+        tip2D,
+        tip3D,
+        multiPointDistance,
+        padDistance,
+        indexBend
+      };
+    }
+
     function onHandsResults(results) {
       const now = performance.now();
 
-      if (!results.multiHandLandmarks) return;
+      if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+        pinchStatusEl.textContent = "pinch: no hand";
+        return;
+      }
+
+      let strongestPinch = null;
 
       results.multiHandLandmarks.forEach((landmarks, handIndex) => {
         const thumbTip = landmarks[4];  // 親指先端
@@ -591,19 +922,47 @@
         const key = "hand_" + handIndex;
         const prev = fingerState.get(key);
 
-        // 親指と人差し指の距離でピンチ判定
-        const pinchDistance = Math.hypot(
-          thumbTip.x - indexTip.x,
-          thumbTip.y - indexTip.y
-        );
+        const pinch = getPinchInfo(landmarks);
 
-        // 大きくすると判定がゆるく、小さくすると厳しくなる
-        const isPinching = pinchDistance < 0.045;
+        // ピンチ開始と解除のしきい値。
+        // v7では3D距離＋複数ランドマークの近接スコアを使うため、
+        // 手の角度が変わっても反応が途切れにくい。
+        const PINCH_ON = 0.255;
+        const PINCH_OFF = 0.345;
+
+        const looksLikePinch =
+          pinch.score < PINCH_ON &&
+          pinch.multiPointDistance < 0.31 &&
+          pinch.tip3D < 0.42;
 
         if (prev) {
+          // 数フレーム安定してからピンチ成立にする
+          if (looksLikePinch) {
+            prev.pinchFrames = Math.min(8, prev.pinchFrames + 1);
+            prev.releaseFrames = 0;
+          } else if (pinch.score > PINCH_OFF) {
+            prev.releaseFrames = Math.min(8, prev.releaseFrames + 1);
+            prev.pinchFrames = 0;
+          } else {
+            // 中間領域では前回状態を維持
+            prev.pinchFrames = Math.max(0, prev.pinchFrames - 0.25);
+            prev.releaseFrames = Math.max(0, prev.releaseFrames - 0.25);
+          }
+
+          const wasPinching = prev.wasPinching;
+          let isPinching = wasPinching;
+
+          if (!wasPinching && prev.pinchFrames >= 2) {
+            isPinching = true;
+          }
+
+          if (wasPinching && prev.releaseFrames >= 3) {
+            isPinching = false;
+          }
+
           // ピンチした瞬間だけ、強い水滴を落とす
-          if (isPinching && !prev.wasPinching) {
-            addRipple(x, y, 3.2, "pinch");
+          if (isPinching && !wasPinching) {
+            addFallingDrop(x, y, 3.2);
             prev.lastRipple = now;
           }
 
@@ -611,16 +970,36 @@
           prev.y = y;
           prev.lastSeen = now;
           prev.wasPinching = isPinching;
+          prev.pinchInfo = pinch;
+
+          const pinchStrength = 1 - Math.min(1, pinch.score / PINCH_OFF);
+          if (!strongestPinch || pinchStrength > strongestPinch.strength) {
+            strongestPinch = {
+              strength: pinchStrength,
+              active: isPinching,
+              score: pinch.score
+            };
+          }
         } else {
           fingerState.set(key, {
             x,
             y,
             lastSeen: now,
             lastRipple: 0,
-            wasPinching: false
+            wasPinching: false,
+            pinchFrames: 0,
+            releaseFrames: 0,
+            pinchInfo: pinch
           });
         }
       });
+
+      if (strongestPinch) {
+        const percent = Math.round(strongestPinch.strength * 100);
+        pinchStatusEl.textContent = strongestPinch.active
+          ? `pinch: ON ${percent}%`
+          : `pinch: ${percent}%`;
+      }
     }
 
     async function startApp() {
