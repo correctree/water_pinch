@@ -3,19 +3,39 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Hand Tracking Water Surface - Falling Pinch Drop v8</title>
+  <title>Aqua Resonance HUD — Hand Tracking Water Surface</title>
 
   <!-- MediaPipe Hands -->
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
 
+  <!-- Fonts: Orbitron(HUDラベル) / Noto Sans JP(本文) / JetBrains Mono(数値) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Noto+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+
   <style>
+    :root {
+      --bg-deep: #020812;
+      --glass-cyan: #7deaff;
+      --glass-violet: #c9a6ff;
+      --ink: #eaf6ff;
+      --ink-dim: rgba(234, 246, 255, 0.56);
+      --accent-gold: #ffd9a0;
+      --danger: #ff90a3;
+      --panel-bg: linear-gradient(160deg, rgba(14, 30, 46, 0.5), rgba(6, 14, 26, 0.62));
+      --panel-border: rgba(125, 234, 255, 0.28);
+      --font-display: "Orbitron", "Noto Sans JP", sans-serif;
+      --font-body: "Noto Sans JP", system-ui, sans-serif;
+      --font-mono: "JetBrains Mono", ui-monospace, monospace;
+    }
+
     html, body {
       margin: 0;
       padding: 0;
       overflow: hidden;
-      background: #020812;
-      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg-deep);
+      font-family: var(--font-body);
       touch-action: none;
     }
 
@@ -38,48 +58,121 @@
       pointer-events: none;
     }
 
+    /* 画面四隅のHUDブラケット（装飾・操作の邪魔をしない） */
+    .hud-corner {
+      position: fixed;
+      width: 34px;
+      height: 34px;
+      z-index: 5;
+      pointer-events: none;
+      opacity: 0.55;
+    }
+    .hud-corner svg { width: 100%; height: 100%; display: block; }
+    .hud-corner.tl { top: 14px; left: 14px; }
+    .hud-corner.tr { top: 14px; right: 14px; transform: scaleX(-1); }
+    .hud-corner.bl { bottom: 14px; left: 14px; transform: scaleY(-1); }
+    .hud-corner.br { bottom: 14px; right: 14px; transform: scale(-1, -1); }
+
     #ui {
       position: fixed;
       left: 16px;
       top: 16px;
       z-index: 10;
-      color: white;
-      background: rgba(0, 0, 0, 0.35);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      padding: 12px 14px;
-      border-radius: 14px;
+      width: 252px;
+      color: var(--ink);
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      backdrop-filter: blur(18px) saturate(140%);
+      -webkit-backdrop-filter: blur(18px) saturate(140%);
+      padding: 16px 16px 14px;
+      border-radius: 18px;
       font-size: 13px;
-      line-height: 1.65;
+      line-height: 1.6;
       user-select: none;
+      box-shadow:
+        0 0 0 1px rgba(125, 234, 255, 0.06) inset,
+        0 18px 40px rgba(0, 0, 0, 0.45),
+        0 0 26px rgba(125, 234, 255, 0.06);
+    }
+
+    .hud-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 12.5px;
+      letter-spacing: 0.14em;
+      color: var(--glass-cyan);
+      text-shadow: 0 0 14px rgba(125, 234, 255, 0.55);
+      margin-bottom: 10px;
+    }
+    .hud-title .dot-pulse {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--glass-cyan);
+      box-shadow: 0 0 8px var(--glass-cyan), 0 0 2px #fff;
+      animation: pulse 1.8s ease-in-out infinite;
+      flex: none;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 0.4; transform: scale(0.85); }
+      50% { opacity: 1; transform: scale(1.15); }
+    }
+
+    .hud-divider {
+      height: 1px;
+      margin: 10px 0;
+      background: linear-gradient(90deg, rgba(125,234,255,0.5), rgba(201,166,255,0.15), transparent);
     }
 
     button {
       appearance: none;
       -webkit-appearance: none;
-      border: 1px solid rgba(255,255,255,.35);
-      background: rgba(255,255,255,.12);
-      color: white;
-      padding: 8px 12px;
+      font-family: var(--font-body);
+      border: 1px solid rgba(125, 234, 255, 0.4);
+      background: linear-gradient(160deg, rgba(125,234,255,0.16), rgba(201,166,255,0.08));
+      color: var(--ink);
+      padding: 9px 14px;
       border-radius: 999px;
       cursor: pointer;
-      margin-bottom: 6px;
+      margin-bottom: 8px;
       font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+      transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.15s ease;
+      width: 100%;
     }
 
     button:hover {
-      background: rgba(255,255,255,.22);
+      background: linear-gradient(160deg, rgba(125,234,255,0.28), rgba(201,166,255,0.16));
+      box-shadow: 0 0 16px rgba(125, 234, 255, 0.28);
     }
+    button:active { transform: scale(0.98); }
+    button:disabled {
+      opacity: 0.55;
+      cursor: default;
+      box-shadow: none;
+    }
+
+    .hud-help {
+      font-size: 11.5px;
+      color: var(--ink-dim);
+      line-height: 1.7;
+    }
+    .hud-help b { color: var(--ink); font-weight: 500; }
 
     #toggleControlsBtn {
-      margin-top: 8px;
+      margin-top: 10px;
       margin-bottom: 2px;
-      padding: 5px 9px;
-      font-size: 12px;
+      padding: 6px 10px;
+      font-size: 11.5px;
+      background: rgba(255,255,255,0.05);
+      border-color: rgba(255,255,255,0.18);
     }
+    #toggleControlsBtn:hover { background: rgba(255,255,255,0.1); }
 
     #controlsPanel {
-      margin-top: 4px;
+      margin-top: 6px;
     }
 
     #controlsPanel.hidden {
@@ -87,43 +180,161 @@
     }
 
     .control {
-      margin-top: 8px;
+      margin-top: 10px;
       display: grid;
-      grid-template-columns: 64px 120px 36px;
-      gap: 6px;
+      grid-template-columns: 52px 1fr 34px;
+      gap: 8px;
       align-items: center;
-      font-size: 12px;
+      font-size: 11.5px;
+      color: var(--ink-dim);
     }
 
+    /* HUD風フェーダー */
     input[type="range"] {
-      width: 120px;
-      accent-color: white;
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 4px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--glass-cyan) 0%, var(--glass-cyan) var(--fill, 50%), rgba(255,255,255,0.14) var(--fill, 50%), rgba(255,255,255,0.14) 100%);
+      outline: none;
+      cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: #fff;
+      border: 2px solid var(--glass-cyan);
+      box-shadow: 0 0 8px rgba(125, 234, 255, 0.7);
+      cursor: pointer;
+      margin-top: 0;
+    }
+    input[type="range"]::-moz-range-track {
+      height: 4px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.14);
+    }
+    input[type="range"]::-moz-range-progress {
+      height: 4px;
+      border-radius: 999px;
+      background: var(--glass-cyan);
+    }
+    input[type="range"]::-moz-range-thumb {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #fff;
+      border: 2px solid var(--glass-cyan);
+      box-shadow: 0 0 8px rgba(125, 234, 255, 0.7);
+      cursor: pointer;
     }
 
     .value {
       text-align: right;
-      opacity: 0.85;
+      opacity: 0.9;
+      font-family: var(--font-mono);
       font-variant-numeric: tabular-nums;
+      color: var(--accent-gold);
     }
 
-    #status {
-      opacity: 0.85;
-      font-size: 12px;
-      margin-top: 8px;
+    #statusBlock {
+      margin-top: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      color: var(--ink-dim);
+    }
+
+    .status-row .led {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex: none;
+      background: #667;
+      box-shadow: 0 0 0 rgba(0,0,0,0);
+      transition: background 0.25s ease, box-shadow 0.25s ease;
+    }
+    .status-row .led.on {
+      background: #7dffb0;
+      box-shadow: 0 0 8px #7dffb0;
+    }
+    .status-row .led.warn {
+      background: var(--danger);
+      box-shadow: 0 0 8px var(--danger);
+    }
+    .status-row .led.active {
+      background: var(--glass-violet);
+      box-shadow: 0 0 10px var(--glass-violet);
+    }
+
+    /* ピンチ強度の円形ゲージ */
+    #pinchGaugeWrap {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-top: 4px;
+    }
+    #pinchGaugeWrap svg { flex: none; }
+    #pinchGaugeWrap .gauge-track {
+      fill: none;
+      stroke: rgba(255,255,255,0.12);
+      stroke-width: 4;
+    }
+    #pinchGaugeWrap .gauge-fill {
+      fill: none;
+      stroke: var(--glass-violet);
+      stroke-width: 4;
+      stroke-linecap: round;
+      transform: rotate(-90deg);
+      transform-origin: 50% 50%;
+      filter: drop-shadow(0 0 4px rgba(201,166,255,0.8));
+      transition: stroke-dashoffset 0.12s ease-out;
+    }
+    #pinchGaugeLabel {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--ink-dim);
+      line-height: 1.5;
+    }
+    #pinchGaugeLabel .big {
+      font-size: 15px;
+      color: var(--glass-violet);
+      font-weight: 600;
     }
   </style>
 </head>
 <body>
+  <!-- 画面四隅のHUDフレーム -->
+  <div class="hud-corner tl"><svg viewBox="0 0 34 34"><path d="M2 22 L2 2 L22 2" fill="none" stroke="#7deaff" stroke-width="2"/></svg></div>
+  <div class="hud-corner tr"><svg viewBox="0 0 34 34"><path d="M2 22 L2 2 L22 2" fill="none" stroke="#7deaff" stroke-width="2"/></svg></div>
+  <div class="hud-corner bl"><svg viewBox="0 0 34 34"><path d="M2 22 L2 2 L22 2" fill="none" stroke="#7deaff" stroke-width="2"/></svg></div>
+  <div class="hud-corner br"><svg viewBox="0 0 34 34"><path d="M2 22 L2 2 L22 2" fill="none" stroke="#7deaff" stroke-width="2"/></svg></div>
   <canvas id="water"></canvas>
   <video id="video" playsinline></video>
 
   <div id="ui">
-    <button id="startBtn">Start Camera / Audio</button><br>
-    クリック：水滴<br>
-    ピンチ：水滴が落下してから強い波紋<br>
-    MediaPipe Hands：21点ランドマーク<br>
-    波の干渉：色と音が変化<br>
-    カメラ映像：ぼかした背景
+    <div class="hud-title"><span class="dot-pulse"></span>AQUA RESONANCE HUD</div>
+
+    <button id="startBtn">Start Camera / Audio</button>
+
+    <div class="hud-help">
+      <b>クリック</b>：水滴を落とす<br>
+      <b>ピンチ</b>：溜めてから落下 → 強い波紋<br>
+      MediaPipe Hands・21点ランドマークで検出<br>
+      波の干渉で色と音が変化します
+    </div>
+
+    <div class="hud-divider"></div>
 
     <button id="toggleControlsBtn">スライダー非表示</button>
 
@@ -153,8 +364,20 @@
       </div>
     </div>
 
-    <div id="status">camera: waiting</div>
-    <div id="pinchStatus">pinch: waiting</div>
+    <div class="hud-divider"></div>
+
+    <div id="statusBlock">
+      <div class="status-row"><span id="statusLed" class="led"></span><span id="status">camera: waiting</span></div>
+
+      <div id="pinchGaugeWrap">
+        <svg width="40" height="40" viewBox="0 0 40 40">
+          <circle class="gauge-track" cx="20" cy="20" r="16"></circle>
+          <circle id="pinchGaugeFill" class="gauge-fill" cx="20" cy="20" r="16"
+                  stroke-dasharray="100.53" stroke-dashoffset="100.53"></circle>
+        </svg>
+        <div id="pinchGaugeLabel">pinch<br><span id="pinchGaugeText" class="big">--</span></div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -164,9 +387,12 @@
     const video = document.getElementById("video");
     const startBtn = document.getElementById("startBtn");
     const statusEl = document.getElementById("status");
-    const pinchStatusEl = document.getElementById("pinchStatus");
+    const statusLedEl = document.getElementById("statusLed");
+    const pinchGaugeFillEl = document.getElementById("pinchGaugeFill");
+    const pinchGaugeTextEl = document.getElementById("pinchGaugeText");
     const toggleControlsBtn = document.getElementById("toggleControlsBtn");
     const controlsPanel = document.getElementById("controlsPanel");
+    const GAUGE_CIRC = 100.53; // 2 * PI * r(16)
 
     const blurSlider = document.getElementById("blurSlider");
     const brightnessSlider = document.getElementById("brightnessSlider");
@@ -185,10 +411,19 @@
       veil: 48
     };
 
+    function updateSliderFill(slider) {
+      const min = Number(slider.min);
+      const max = Number(slider.max);
+      const pct = ((Number(slider.value) - min) / (max - min)) * 100;
+      slider.style.setProperty("--fill", pct + "%");
+    }
+
     function bindSlider(slider, output, key) {
+      updateSliderFill(slider);
       slider.addEventListener("input", () => {
         cameraFx[key] = Number(slider.value);
         output.textContent = slider.value;
+        updateSliderFill(slider);
       });
     }
 
@@ -196,6 +431,14 @@
     bindSlider(brightnessSlider, brightnessValue, "brightness");
     bindSlider(saturateSlider, saturateValue, "saturate");
     bindSlider(veilSlider, veilValue, "veil");
+
+    // ピンチ強度ゲージの更新
+    function setPinchGauge(strength, active) {
+      const clamped = Math.max(0, Math.min(1, strength));
+      pinchGaugeFillEl.style.strokeDashoffset = GAUGE_CIRC * (1 - clamped);
+      pinchGaugeTextEl.textContent = Math.round(clamped * 100) + "%";
+      pinchGaugeFillEl.style.stroke = active ? "var(--glass-violet)" : "var(--glass-cyan)";
+    }
 
     toggleControlsBtn.addEventListener("click", () => {
       controlsPanel.classList.toggle("hidden");
@@ -217,11 +460,84 @@
     const fallingDrops = [];
 
     // ピンチしてから水面に落ちるまでの時間。大きくするとタイムラグが長くなる
-    const PINCH_DROP_FALL_TIME = 620;
+    const PINCH_DROP_FALL_TIME = 1050;
 
     let audioCtx = null;
     let started = false;
     let lastInterferenceSoundAt = 0;
+    let reverbNode = null;      // 幻想的な残響を作るコンボルバー
+    let reverbWetGain = null;
+    let padStarted = false;
+
+    // 残響用のインパルスレスポンスをノイズから生成（外部音源ファイル不要）
+    function createImpulseResponse(duration = 3.6, decay = 3.2) {
+      const rate = audioCtx.sampleRate;
+      const length = Math.floor(rate * duration);
+      const impulse = audioCtx.createBuffer(2, length, rate);
+
+      for (let ch = 0; ch < 2; ch++) {
+        const data = impulse.getChannelData(ch);
+        for (let i = 0; i < length; i++) {
+          data[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / length, decay);
+        }
+      }
+
+      return impulse;
+    }
+
+    // 常に鳴り続けるアンビエントパッド。水面の"間"を幻想的に満たす
+    function startAmbientPad() {
+      if (padStarted) return;
+      padStarted = true;
+
+      const notes = [130.81, 164.81, 196.0, 246.94]; // C3-E3-G3-B3（幻想的な浮遊コード）
+
+      const padBus = audioCtx.createGain();
+      padBus.gain.value = 0.0001;
+      padBus.connect(audioCtx.destination);
+      padBus.connect(reverbNode);
+      padBus.gain.exponentialRampToValueAtTime(0.05, audioCtx.currentTime + 5);
+
+      notes.forEach((freq, i) => {
+        const osc = audioCtx.createOscillator();
+        osc.type = "sine";
+        osc.frequency.value = freq;
+        osc.detune.value = i % 2 === 0 ? -6 : 6;
+
+        const oscGain = audioCtx.createGain();
+        oscGain.gain.value = 0.55;
+
+        const filter = audioCtx.createBiquadFilter();
+        filter.type = "lowpass";
+        filter.frequency.value = 800;
+        filter.Q.value = 0.4;
+
+        // ゆっくりとしたLFOでフィルターを揺らし、きらめくような質感にする
+        const lfo = audioCtx.createOscillator();
+        lfo.frequency.value = 0.04 + i * 0.015;
+        const lfoGain = audioCtx.createGain();
+        lfoGain.gain.value = 200;
+        lfo.connect(lfoGain);
+        lfoGain.connect(filter.frequency);
+        lfo.start();
+
+        // 左右にゆっくり回るパン
+        const panner = audioCtx.createStereoPanner();
+        const panLfo = audioCtx.createOscillator();
+        panLfo.frequency.value = 0.03 + i * 0.01;
+        const panLfoGain = audioCtx.createGain();
+        panLfoGain.gain.value = 0.7;
+        panLfo.connect(panLfoGain);
+        panLfoGain.connect(panner.pan);
+        panLfo.start();
+
+        osc.connect(filter);
+        filter.connect(oscGain);
+        oscGain.connect(panner);
+        panner.connect(padBus);
+        osc.start();
+      });
+    }
 
     function resize() {
       dpr = window.devicePixelRatio || 1;
@@ -242,6 +558,17 @@
     function initAudio() {
       if (!audioCtx) {
         audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        reverbNode = audioCtx.createConvolver();
+        reverbNode.buffer = createImpulseResponse();
+
+        reverbWetGain = audioCtx.createGain();
+        reverbWetGain.gain.value = 0.5;
+
+        reverbNode.connect(reverbWetGain);
+        reverbWetGain.connect(audioCtx.destination);
+
+        startAmbientPad();
       }
 
       if (audioCtx.state === "suspended") {
@@ -298,9 +625,28 @@
       gain.gain.exponentialRampToValueAtTime(0.11, audioCtx.currentTime + 0.012);
       gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.34);
 
+      // 倍音を少し外した副オシレーターを重ね、クリスタルのような煌めきを加える
+      const shimmer = audioCtx.createOscillator();
+      const shimmerGain = audioCtx.createGain();
+      shimmer.type = "sine";
+      shimmer.frequency.setValueAtTime((baseFreq + interferenceShift) * 2.76, audioCtx.currentTime);
+      shimmer.frequency.exponentialRampToValueAtTime(
+        Math.max(160, baseFreq * 1.4),
+        audioCtx.currentTime + 0.3
+      );
+      shimmerGain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+      shimmerGain.gain.exponentialRampToValueAtTime(0.035, audioCtx.currentTime + 0.012);
+      shimmerGain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.5);
+      shimmer.connect(shimmerGain);
+      shimmerGain.connect(audioCtx.destination);
+      shimmerGain.connect(reverbNode);
+      shimmer.start();
+      shimmer.stop(audioCtx.currentTime + 0.52);
+
       osc.connect(filter);
       filter.connect(gain);
       gain.connect(audioCtx.destination);
+      gain.connect(reverbNode);
 
       osc.start();
       osc.stop(audioCtx.currentTime + 0.36);
@@ -340,10 +686,26 @@
       gain.gain.exponentialRampToValueAtTime(0.26, audioCtx.currentTime + 0.018);
       gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.68);
 
+      // 幻想的な余韻を作るベル状の高次倍音レイヤー
+      const bell = audioCtx.createOscillator();
+      const bellGain = audioCtx.createGain();
+      bell.type = "sine";
+      bell.frequency.setValueAtTime(baseFreq * 4.2, audioCtx.currentTime);
+      bell.frequency.exponentialRampToValueAtTime(baseFreq * 2.1, audioCtx.currentTime + 1.1);
+      bellGain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+      bellGain.gain.exponentialRampToValueAtTime(0.05, audioCtx.currentTime + 0.02);
+      bellGain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 1.3);
+      bell.connect(bellGain);
+      bellGain.connect(reverbNode);
+      bellGain.connect(audioCtx.destination);
+      bell.start();
+      bell.stop(audioCtx.currentTime + 1.35);
+
       osc1.connect(filter);
       osc2.connect(filter);
       filter.connect(gain);
       gain.connect(audioCtx.destination);
+      gain.connect(reverbNode);
 
       osc1.start();
       osc2.start();
@@ -385,6 +747,7 @@
       oscB.connect(gain);
       gain.connect(panner);
       panner.connect(audioCtx.destination);
+      panner.connect(reverbNode);
 
       oscA.start();
       oscB.start();
@@ -489,11 +852,12 @@
       const interference = fieldAt(x, y);
 
       let hue;
+      const jitter = (Math.random() - 0.5) * 90; // 波紋ごとに色相をランダムにずらしてバリエーションを増やす
 
       if (source === "pinch") {
-        hue = 285 + interference * 45; // ピンチは紫寄り
+        hue = 275 + interference * 45 + jitter; // ピンチは紫〜マゼンタ〜ピンクの帯でランダムに変化
       } else {
-        hue = 195 + interference * 70; // クリックは水色寄り
+        hue = 195 + interference * 70 + jitter; // クリックは水色〜青緑〜青紫の帯でランダムに変化
       }
 
       ripples.push({
@@ -642,12 +1006,14 @@
 
       const now = performance.now();
 
-      // 鳴りすぎ防止
-      if (now - lastInterferenceSoundAt < 260) return;
+      // 鳴りすぎ防止（短くするほど頻繁に鳴る）
+      if (now - lastInterferenceSoundAt < 130) return;
 
       let best = null;
 
-      // 波紋同士の中点付近をサンプリングする
+      // 波紋同士の間を複数点サンプリングし、干渉が強い瞬間を逃しにくくする
+      const sampleTs = [0.35, 0.5, 0.65];
+
       for (let i = 0; i < ripples.length; i++) {
         for (let j = i + 1; j < ripples.length; j++) {
           const a = ripples[i];
@@ -658,19 +1024,21 @@
 
           if (ageA > RIPPLE_LIFETIME || ageB > RIPPLE_LIFETIME) continue;
 
-          const x = (a.x + b.x) * 0.5;
-          const y = (a.y + b.y) * 0.5;
+          for (const t of sampleTs) {
+            const x = a.x + (b.x - a.x) * t;
+            const y = a.y + (b.y - a.y) * t;
 
-          const value = Math.abs(fieldAt(x, y));
+            const value = Math.abs(fieldAt(x, y));
 
-          if (!best || value > best.value) {
-            best = { x, y, value };
+            if (!best || value > best.value) {
+              best = { x, y, value };
+            }
           }
         }
       }
 
       // この数値を下げると干渉音が出やすくなる
-      if (best && best.value > 0.95) {
+      if (best && best.value > 0.55) {
         playInterferenceSound(best.x, best.y, best.value);
         lastInterferenceSoundAt = now;
       }
@@ -905,7 +1273,7 @@
       const now = performance.now();
 
       if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
-        pinchStatusEl.textContent = "pinch: no hand";
+        setPinchGauge(0, false);
         return;
       }
 
@@ -995,10 +1363,7 @@
       });
 
       if (strongestPinch) {
-        const percent = Math.round(strongestPinch.strength * 100);
-        pinchStatusEl.textContent = strongestPinch.active
-          ? `pinch: ON ${percent}%`
-          : `pinch: ${percent}%`;
+        setPinchGauge(strongestPinch.strength, strongestPinch.active);
       }
     }
 
@@ -1037,12 +1402,16 @@
         startBtn.textContent = "Camera / Audio Started";
         startBtn.disabled = true;
         statusEl.textContent = "camera: running";
+        statusLedEl.classList.remove("warn");
+        statusLedEl.classList.add("on");
       } catch (err) {
         console.error(err);
         statusEl.textContent = "camera: error / HTTPS or localhost required";
         startBtn.textContent = "Retry Camera / Audio";
         startBtn.disabled = false;
         started = false;
+        statusLedEl.classList.remove("on");
+        statusLedEl.classList.add("warn");
       }
     }
 
