@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hand Tracking Water Surface - Pinch Drop v2</title>
+
+  <!-- MediaPipe Hands -->
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      background: #020812;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      touch-action: none;
+    }
+
+    canvas {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      display: block;
+      cursor: crosshair;
+      z-index: 1;
+    }
+
+    video {
+      position: fixed;
+      inset: 0;
+      width: 100vw;
+      height: 100vh;
+      object-fit: cover;
+      transform: scaleX(-1);
+      filter: blur(18px) brightness(0.48) saturate(1.25);
+      opacity: 0.72;
+      z-index: 0;
+      pointer-events: none;
+    }
+
+    #ui {
+      position: fixed;
+      left: 16px;
+      top: 16px;
+      z-index: 10;
+      color: white;
+      background: rgba(0, 0, 0, 0.35);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      padding: 12px 14px;
+      border-radius: 14px;
+      font-size: 13px;
+      line-height: 1.65;
+      user-select: none;
+    }
+
+    button {
+      appearance: none;
+      -webkit-appearance: none;
+      border: 1px solid rgba(255,255,255,.35);
+      background: rgba(255,255,255,.12);
+      color: white;
+      padding: 8px 12px;
+      border-radius: 999px;
+      cursor: pointer;
+      margin-bottom: 6px;
+      font-size: 13px;
+    }
+
+    button:hover {
+      background: rgba(255,255,255,.22);
+    }
+
+    #status {
+      opacity: 0.85;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+  </style>
+</head>
+<body>
+  <canvas id="water"></canvas>
+  <video id="video" playsinline></video>
+
+  <div id="ui">
+    <button id="startBtn">Start Camera / Audio</button><br>
+    クリック：水滴<br>
+    ピンチ：強い水滴<br>
+    波の干渉：色と音が変化<br>
+    カメラ映像：ぼかした背景
+    <div id="status">camera: waiting</div>
+  </div>
+
+  <script>
+    const canvas = document.getElementById("water");
+    const ctx = canvas.getContext("2d");
+
+    const video = document.getElementById("video");
+    const startBtn = document.getElementById("startBtn");
+    const statusEl = document.getElementById("status");
+
+    let W = 0;
+    let H = 0;
+    let dpr = window.devicePixelRatio || 1;
+
+    // 波紋の持続時間。短くしたい場合はさらに小さくする
+    const RIPPLE_LIFETIME = 4.8;
+
+    const ripples = [];
+    const fingerState = new Map();
+    const interferenceSounds = [];
+
+    let audioCtx = null;
+    let started = false;
+    let lastInterferenceSoundAt = 0;
+
+    function resize() {
+      dpr = window.devicePixelRatio || 1;
+      W = window.innerWidth;
+      H = window.innerHeight;
+
+      canvas.width = Math.floor(W * dpr);
+      canvas.height = Math.floor(H * dpr);
+      canvas.style.width = W + "px";
+      canvas.style.height = H + "px";
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+
+    window.addEventListener("resize", resize);
+    resize();
+
+    function initAudio() {
+      if (!audioCtx) {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      }
+
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume();
+      }
+    }
+
+    // 現在の水面の干渉量を計算
+    function fieldAt(x, y) {
+      const now = performance.now();
+      let sum = 0;
+
+      for (const r of ripples) {
+        const age = (now - r.t) / 1000;
+        if (age < 0 || age > RIPPLE_LIFETIME) continue;
+
+        const dx = x - r.x;
+        const dy = y - r.y;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+
+        const wave = Math.sin(dist * 0.055 - age * 9.0);
+        const decay = Math.exp(-age * 1.15) * Math.exp(-dist * 0.006);
+
+        sum += wave * decay * r.power;
+      }
+
+      return sum;
+    }
+
+    function playDropSound(x, y, interference) {
+      if (!audioCtx) return;
+
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      const filter = audioCtx.createBiquadFilter();
+
+      const baseFreq = 180 + (1 - y / H) * 560;
+      const interferenceShift = Math.abs(interference) * 180;
+
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(baseFreq + interferenceShift, audioCtx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(
+        Math.max(80, baseFreq * 0.55),
+        audioCtx.currentTime + 0.3
+      );
+
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(
+        900 + Math.abs(interference) * 1200,
+        audioCtx.currentTime
+      );
+
+      gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.11, audioCtx.currentTime + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.34);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc.start();
+      osc.stop(audioCtx.currentTime + 0.36);
+    }
+
+    function playStrongDropSound(x, y) {
+      if (!audioCtx) return;
+
+      const osc1 = audioCtx.createOscillator();
+      const osc2 = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      const filter = audioCtx.createBiquadFilter();
+
+      const baseFreq = 90 + (1 - y / H) * 180;
+
+      osc1.type = "sine";
+      osc2.type = "triangle";
+
+      osc1.frequency.setValueAtTime(baseFreq, audioCtx.currentTime);
+      osc2.frequency.setValueAtTime(baseFreq * 1.5, audioCtx.currentTime);
+
+      osc1.frequency.exponentialRampToValueAtTime(
+        Math.max(45, baseFreq * 0.45),
+        audioCtx.currentTime + 0.58
+      );
+
+      osc2.frequency.exponentialRampToValueAtTime(
+        Math.max(60, baseFreq * 0.6),
+        audioCtx.currentTime + 0.38
+      );
+
+      filter.type = "lowpass";
+      filter.frequency.setValueAtTime(1200, audioCtx.currentTime);
+      filter.frequency.exponentialRampToValueAtTime(260, audioCtx.currentTime + 0.62);
+
+      gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.26, audioCtx.currentTime + 0.018);
+      gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.68);
+
+      osc1.connect(filter);
+      osc2.connect(filter);
+      filter.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      osc1.start();
+      osc2.start();
+
+      osc1.stop(audioCtx.currentTime + 0.72);
+      osc2.stop(audioCtx.currentTime + 0.72);
+    }
+
+    // 波の干渉が強い時に鳴る短い倍音
+    function playInterferenceSound(x, y, strength) {
+      if (!audioCtx) return;
+
+      const oscA = audioCtx.createOscillator();
+      const oscB = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      const panner = audioCtx.createStereoPanner();
+
+      const normX = Math.max(-1, Math.min(1, (x / W) * 2 - 1));
+      const freq = 280 + (1 - y / H) * 700 + Math.min(260, strength * 90);
+
+      oscA.type = "sine";
+      oscB.type = "sine";
+
+      oscA.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      oscB.frequency.setValueAtTime(freq * 1.505, audioCtx.currentTime);
+
+      // 少しだけ揺らして、水面の干渉らしい濁りを出す
+      oscA.detune.setValueAtTime(-7 + strength * 3, audioCtx.currentTime);
+      oscB.detune.setValueAtTime(9 - strength * 2, audioCtx.currentTime);
+
+      panner.pan.setValueAtTime(normX, audioCtx.currentTime);
+
+      const vol = Math.min(0.13, 0.035 + strength * 0.018);
+      gain.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(vol, audioCtx.currentTime + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.28);
+
+      oscA.connect(gain);
+      oscB.connect(gain);
+      gain.connect(panner);
+      panner.connect(audioCtx.destination);
+
+      oscA.start();
+      oscB.start();
+
+      oscA.stop(audioCtx.currentTime + 0.32);
+      oscB.stop(audioCtx.currentTime + 0.32);
+
+      interferenceSounds.push({
+        x,
+        y,
+        t: performance.now(),
+        strength
+      });
+    }
+
+    function addRipple(x, y, power = 1, source = "click") {
+      const interference = fieldAt(x, y);
+
+      let hue;
+
+      if (source === "pinch") {
+        hue = 285 + interference * 45; // ピンチは紫寄り
+      } else {
+        hue = 195 + interference * 70; // クリックは水色寄り
+      }
+
+      ripples.push({
+        x,
+        y,
+        t: performance.now(),
+        power,
+        hue,
+        source
+      });
+
+      while (ripples.length > 44) {
+        ripples.shift();
+      }
+
+      if (source === "pinch") {
+        playStrongDropSound(x, y);
+      } else {
+        playDropSound(x, y, interference);
+      }
+    }
+
+    canvas.addEventListener("pointerdown", (e) => {
+      initAudio();
+      addRipple(e.clientX, e.clientY, 1.4, "click");
+    });
+
+    // ドラッグ・なぞりによる波紋は削除。
+    // クリック、またはピンチだけで水滴が発生する。
+
+    function drawWaterBase() {
+      const grd = ctx.createRadialGradient(
+        W * 0.5, H * 0.42, 20,
+        W * 0.5, H * 0.5, Math.max(W, H)
+      );
+
+      grd.addColorStop(0, "rgba(7, 48, 77, 0.70)");
+      grd.addColorStop(0.42, "rgba(4, 26, 46, 0.74)");
+      grd.addColorStop(1, "rgba(1, 7, 18, 0.82)");
+
+      ctx.fillStyle = grd;
+      ctx.fillRect(0, 0, W, H);
+
+      // カメラ背景の上に水面らしい青いベールを重ねる
+      ctx.fillStyle = "rgba(0, 18, 38, 0.22)";
+      ctx.fillRect(0, 0, W, H);
+
+      // 水面の薄い光
+      ctx.fillStyle = "rgba(255,255,255,0.018)";
+      for (let i = 0; i < 18; i++) {
+        const y = (i / 18) * H;
+        ctx.fillRect(0, y, W, 1);
+      }
+    }
+
+    function drawInterferenceField() {
+      const step = 8;
+      const now = performance.now();
+
+      for (let y = 0; y < H; y += step) {
+        for (let x = 0; x < W; x += step) {
+          let sum = 0;
+          let energy = 0;
+
+          for (const r of ripples) {
+            const age = (now - r.t) / 1000;
+            if (age > RIPPLE_LIFETIME) continue;
+
+            const dx = x - r.x;
+            const dy = y - r.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+
+            const wave = Math.sin(dist * 0.047 - age * 7.8);
+            const decay = Math.exp(-age * 0.9) * Math.exp(-dist * 0.0048);
+            const v = wave * decay * r.power;
+
+            sum += v;
+            energy += Math.abs(v);
+          }
+
+          if (energy > 0.012) {
+            const hue = 190 + sum * 105 + energy * 70;
+            const light = 38 + Math.min(32, energy * 90);
+            const alpha = Math.min(0.38, energy * 0.56);
+
+            ctx.fillStyle = `hsla(${hue}, 88%, ${light}%, ${alpha})`;
+            ctx.fillRect(x, y, step + 1, step + 1);
+          }
+        }
+      }
+    }
+
+    // 波の干渉が強い地点を探して音を鳴らす
+    function detectInterferenceSound() {
+      if (!audioCtx || ripples.length < 2) return;
+
+      const now = performance.now();
+
+      // 鳴りすぎ防止
+      if (now - lastInterferenceSoundAt < 260) return;
+
+      let best = null;
+
+      // 波紋同士の中点付近をサンプリングする
+      for (let i = 0; i < ripples.length; i++) {
+        for (let j = i + 1; j < ripples.length; j++) {
+          const a = ripples[i];
+          const b = ripples[j];
+
+          const ageA = (now - a.t) / 1000;
+          const ageB = (now - b.t) / 1000;
+
+          if (ageA > RIPPLE_LIFETIME || ageB > RIPPLE_LIFETIME) continue;
+
+          const x = (a.x + b.x) * 0.5;
+          const y = (a.y + b.y) * 0.5;
+
+          const value = Math.abs(fieldAt(x, y));
+
+          if (!best || value > best.value) {
+            best = { x, y, value };
+          }
+        }
+      }
+
+      // この数値を下げると干渉音が出やすくなる
+      if (best && best.value > 0.95) {
+        playInterferenceSound(best.x, best.y, best.value);
+        lastInterferenceSoundAt = now;
+      }
+    }
+
+    function drawRipples() {
+      const now = performance.now();
+
+      for (const r of ripples) {
+        const age = (now - r.t) / 1000;
+        if (age > RIPPLE_LIFETIME) continue;
+
+        const isPinch = r.source === "pinch";
+        const radiusSpeed = isPinch ? 150 : 115;
+        const radius = age * radiusSpeed;
+        const alpha = Math.max(0, 1 - age / RIPPLE_LIFETIME);
+
+        const ringCount = isPinch ? 7 : 4;
+
+        for (let i = 0; i < ringCount; i++) {
+          const rr = radius - i * (isPinch ? 22 : 18);
+          if (rr <= 0) continue;
+
+          ctx.beginPath();
+          ctx.arc(r.x, r.y, rr, 0, Math.PI * 2);
+
+          const lineAlpha = isPinch
+            ? alpha * (0.34 - i * 0.035)
+            : alpha * (0.22 - i * 0.035);
+
+          ctx.strokeStyle = `hsla(${r.hue + i * 18}, 95%, 72%, ${Math.max(0, lineAlpha)})`;
+          ctx.lineWidth = isPinch ? 3.6 : 1.4 + r.power * 0.8;
+          ctx.stroke();
+        }
+
+        // 中心の水滴光
+        ctx.beginPath();
+        ctx.arc(
+          r.x,
+          r.y,
+          isPinch ? 7 + Math.sin(age * 16) * 2.5 : 3 + Math.sin(age * 16) * 1.5,
+          0,
+          Math.PI * 2
+        );
+
+        ctx.fillStyle = isPinch
+          ? `hsla(${r.hue}, 100%, 82%, ${alpha * 0.8})`
+          : `hsla(${r.hue}, 100%, 80%, ${alpha * 0.55})`;
+
+        ctx.fill();
+
+        // ピンチの余韻
+        if (isPinch) {
+          const glow = ctx.createRadialGradient(r.x, r.y, 0, r.x, r.y, 90 + age * 40);
+          glow.addColorStop(0, `hsla(${r.hue}, 95%, 72%, ${alpha * 0.20})`);
+          glow.addColorStop(1, `hsla(${r.hue}, 95%, 72%, 0)`);
+
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(r.x, r.y, 90 + age * 40, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+    }
+
+    function drawInterferenceSoundMarks() {
+      const now = performance.now();
+
+      for (let i = interferenceSounds.length - 1; i >= 0; i--) {
+        const s = interferenceSounds[i];
+        const age = (now - s.t) / 1000;
+
+        if (age > 0.6) {
+          interferenceSounds.splice(i, 1);
+          continue;
+        }
+
+        const alpha = 1 - age / 0.6;
+        const radius = 18 + age * 85;
+
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, radius, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(255,255,210,${alpha * 0.42})`;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, 3 + s.strength * 2, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(255,255,220,${alpha * 0.75})`;
+        ctx.fill();
+      }
+    }
+
+    function drawFingerTouches() {
+      const now = performance.now();
+
+      for (const [, f] of fingerState) {
+        if (now - f.lastSeen > 250) continue;
+
+        const isPinching = f.wasPinching;
+
+        // 指先は水面に触れている位置のガイドとしてだけ表示。
+        // 指をなぞっても波紋は発生しない。
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, isPinching ? 24 : 12, 0, Math.PI * 2);
+        ctx.strokeStyle = isPinching
+          ? "rgba(230,180,255,0.75)"
+          : "rgba(255,255,255,0.25)";
+        ctx.lineWidth = isPinching ? 2 : 1;
+        ctx.stroke();
+
+        ctx.beginPath();
+        ctx.arc(f.x, f.y, isPinching ? 6 : 3, 0, Math.PI * 2);
+        ctx.fillStyle = isPinching
+          ? "rgba(245,220,255,0.95)"
+          : "rgba(255,255,255,0.45)";
+        ctx.fill();
+      }
+    }
+
+    function cleanupRipples() {
+      const now = performance.now();
+
+      for (let i = ripples.length - 1; i >= 0; i--) {
+        if ((now - ripples[i].t) / 1000 > RIPPLE_LIFETIME + 0.1) {
+          ripples.splice(i, 1);
+        }
+      }
+    }
+
+    function animate() {
+      drawWaterBase();
+      drawInterferenceField();
+      detectInterferenceSound();
+      drawRipples();
+      drawInterferenceSoundMarks();
+      drawFingerTouches();
+      cleanupRipples();
+
+      requestAnimationFrame(animate);
+    }
+
+    animate();
+
+    function onHandsResults(results) {
+      const now = performance.now();
+
+      if (!results.multiHandLandmarks) return;
+
+      results.multiHandLandmarks.forEach((landmarks, handIndex) => {
+        const thumbTip = landmarks[4];  // 親指先端
+        const indexTip = landmarks[8];  // 人差し指先端
+
+        // 自撮り感覚に合わせて左右反転
+        const x = (1 - indexTip.x) * W;
+        const y = indexTip.y * H;
+
+        const key = "hand_" + handIndex;
+        const prev = fingerState.get(key);
+
+        // 親指と人差し指の距離でピンチ判定
+        const pinchDistance = Math.hypot(
+          thumbTip.x - indexTip.x,
+          thumbTip.y - indexTip.y
+        );
+
+        // 大きくすると判定がゆるく、小さくすると厳しくなる
+        const isPinching = pinchDistance < 0.045;
+
+        if (prev) {
+          // ピンチした瞬間だけ、強い水滴を落とす
+          if (isPinching && !prev.wasPinching) {
+            addRipple(x, y, 3.2, "pinch");
+            prev.lastRipple = now;
+          }
+
+          prev.x = x;
+          prev.y = y;
+          prev.lastSeen = now;
+          prev.wasPinching = isPinching;
+        } else {
+          fingerState.set(key, {
+            x,
+            y,
+            lastSeen: now,
+            lastRipple: 0,
+            wasPinching: false
+          });
+        }
+      });
+    }
+
+    async function startApp() {
+      if (started) return;
+      started = true;
+
+      initAudio();
+
+      try {
+        const hands = new Hands({
+          locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+          }
+        });
+
+        hands.setOptions({
+          maxNumHands: 2,
+          modelComplexity: 1,
+          minDetectionConfidence: 0.65,
+          minTrackingConfidence: 0.55
+        });
+
+        hands.onResults(onHandsResults);
+
+        const camera = new Camera(video, {
+          onFrame: async () => {
+            await hands.send({ image: video });
+          },
+          width: 640,
+          height: 480
+        });
+
+        await camera.start();
+
+        startBtn.textContent = "Camera / Audio Started";
+        startBtn.disabled = true;
+        statusEl.textContent = "camera: running";
+      } catch (err) {
+        console.error(err);
+        statusEl.textContent = "camera: error / HTTPS or localhost required";
+        startBtn.textContent = "Retry Camera / Audio";
+        startBtn.disabled = false;
+        started = false;
+      }
+    }
+
+    startBtn.addEventListener("click", startApp);
+  </script>
+</body>
+</html>
